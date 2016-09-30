@@ -1,7 +1,7 @@
-= VantagePlugin
+# VantagePlugin
 VantageControls InFusion plugin for homebridge: https://github.com/nfarina/homebridge
 
-= Installation
+# Installation
 Install plugin with npm install -g homebridge-vantage
 Add platform within config.json of you homebridge instance:
 
@@ -23,7 +23,7 @@ Add platform within config.json of you homebridge instance:
 Restart homebridge
 Enjoy!
 
-= Supported Devices
+# Supported Devices
 
 Currently it should be possible to control all loads registered on you InFusion device, but I'm working on the detection of the difference with Relay, Dimmer and RGB Loads; I'm ready to support Thermostats and other devices but I prefer to keep the program stable before publish further functionalities. My test plan consists of:
 - RGB Philips Hue lights and Osram Lightify (controlled by Vantage, not compatible with HomeKit)
