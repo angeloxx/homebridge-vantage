@@ -1,0 +1,14 @@
+{
+    "platforms": [{
+        "platform": "VantageControls",
+        "ipaddress": "192.168.1,1"
+        }], 
+    "bridge": {
+        "username": "CC:22:3D:E3:CE:31", 
+        "name": "Vantage HomeBridge Adapter", 
+        "pin": "342-52-220", 
+        "port": 51826
+    }, 
+    "description": "My Fantastic Vantage System", 
+    "accessories": []
+}
