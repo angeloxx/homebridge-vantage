@@ -8,7 +8,7 @@ Add platform within config.json of you homebridge instance:
     {
         "platforms": [{
             "platform": "VantageControls",
-            "ipaddress": "192.168.1,1"
+            "ipaddress": "192.168.1.1"
             }], 
         "bridge": {
             "username": "CC:22:3D:E3:CE:31", 
