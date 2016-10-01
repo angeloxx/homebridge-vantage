@@ -149,11 +149,11 @@ class VantageInfusion {
 	}
 
 	/**
-	 * Send the set RGB color request to the controller 
+	 * Send the set HSL color request to the controller 
 	 */
-    RGBLoad_DissolveHSL(vid, r, g, b, time) {
+    RGBLoad_DissolveHSL(vid, h, s, l, time) {
         var thisTime = time || 500;
-        this.command.write(sprintf("INVOKE %s RGBLoad.DissolveHSL %s %s %s %s\n", vid, r, g, b, thisTime))
+        this.command.write(sprintf("INVOKE %s RGBLoad.DissolveHSL %s %s %s %s\n", vid, h, s, l * 1000, thisTime))
     }
 
 
