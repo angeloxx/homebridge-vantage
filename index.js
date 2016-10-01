@@ -1,6 +1,5 @@
 var colorsys = require('colorsys');
 var net = require('net');
-var sleep = require('sleep');
 var sprintf = require("sprintf-js").sprintf;
 var inherits = require("util").inherits;
 var parser = require('xml2json');
@@ -19,6 +18,7 @@ module.exports = function (homebridge) {
 	UUIDGen = homebridge.hap.uuid;
 
 	inherits(VantageLoad, Accessory);
+	process.setMaxListeners(0);
 	homebridge.registerPlatform("homebridge-vantage", "VantageControls", VantagePlatform);
 };
 
@@ -30,63 +30,82 @@ class VantageInfusion {
         this.accessories = accessories || [];
         this.command = {};
 		this.interfaces = {};
+		this.StartCommand();
 	}
 
+	/**
+	 * Start the command session. The InFusion controller (starting from the 3.2 version of the
+	 * firmware) must be configured without encryption or password protection. Support to SSL
+	 * and password protected connection will be introduced in the future, the IoT world is
+	 * a bad place! 
+	 */
 	StartCommand() {
 		this.command = net.connect({ host: this.ipaddress, port: 3001 }, () => {
-			this.command.write(sprintf("STATUS ALL\n"));
-			if (this.accessories.length > 0) {
-				for (var i = 0; i < this.accessories.length; i++) {
-					if (this.accessories[i].type == 'relay' || this.accessories[i].type == 'dimmer' || this.accessories[i].type == 'rgb') {
-						this.command.write(sprintf("GETLOAD %s\n", this.accessories[i].address));
+			this.command.on('data', (data) => {
+				/* Data received */
+				var lines = data.toString().split('\n');
+				for (var i = 0; i < lines.length; i++) {
+					if (lines[i].startsWith("S:LOAD") || lines[i].startsWith("R:GETLOAD")) {
+						/* Live update about load level (even if it's a RGB load') */
+						var dataItem = lines[i].split(" ");
+						this.emit("loadStatusChange", parseInt(dataItem[1]),parseInt(dataItem[2]));
+					}
+					if (lines[i].startsWith("R:INVOKE") && lines[i].indexOf("Object.IsInterfaceSupported")) {
+						var dataItem = lines[i].split(" ");
+						this.emit(sprintf("isInterfaceSupportedAnswer-%d-%d",parseInt(dataItem[1]),parseInt(dataItem[4])),parseInt(dataItem[2]));
 					}
 				}
-			}
+			});			
+			this.command.write(sprintf("STATUS ALL\n"));
 		});
-
-		this.command.on('data', (data) => {
-			/* Data received */
-			var lines = data.toString().split('\n');
-			for (var i = 0; i < lines.length; i++) {
-
-				if (lines[i].startsWith("S:LOAD") || lines[i].startsWith("R:GETLOAD")) {
-					/* Live update about load level (even if it's a RGB load') */
-					var dataItem = lines[i].split(" ");
-					this.accessories.forEach(function (accessory) {
-						if (accessory.address == parseInt(dataItem[1])) {
-							accessory.bri = parseInt(dataItem[2]);
-							accessory.power = (parseInt(dataItem[2]) > 0);
-							accessory.lightBulbService.getCharacteristic(Characteristic.Brightness).getValue(null, accessory.bri);
-							accessory.lightBulbService.getCharacteristic(Characteristic.On).getValue(null, accessory.power);
-						}
-					});
-				}
-			}
-		});
-
-
 	}
 
-	Discover() {
+	getLoadStatus(vid) {
+		this.command.write(sprintf("GETLOAD %s\n", vid));
+	}
 
-		if (fs.existsSync('/tmp/vantage.dc') && this.usecache) {
-			fs.readFile('/tmp/vantage.dc', 'utf8', function (err, data) {
-				if (!err) {
-					this.emit("endDownloadConfiguration", data);
+	/**
+	 * Send the IsInterfaceSupported request to the InFusion controller,
+	 * it needs the VID of the object and the IID (InterfaceId) taken 
+	 * previously with the configuration session
+	 * @return true, false or a promise!
+	 */
+	isInterfaceSupported(vid, interfaceName, itemName) {
+		if (this.interfaces[interfaceName] === undefined) {
+			return new Promise((resolve, reject) => {
+				resolve({'vid':vid, 'name':itemName, 'support':false});
+			});
+		} else {
+			/**
+			 * Sample
+			 *   OUT| INVOKE 2774 Object.IsInterfaceSupported 32
+			 *    IN| R:INVOKE 2774 0 Object.IsInterfaceSupported 32
+			 */
+			var interfaceId = this.interfaces[interfaceName];
+			
+			return new Promise((resolve, reject) => {
+				this.once(sprintf("isInterfaceSupportedAnswer-%d-%d",parseInt(vid),parseInt(interfaceId)), (_support) => {
+					resolve({'vid':vid, 'name':itemName, 'support':_support});
 				}
-			}.bind(this));
+				);
+				this.command.write(sprintf("INVOKE %s Object.IsInterfaceSupported %s\n", vid,interfaceId));
+			});
 		}
 
-		this.command = net.connect({ host: this.ipaddress, port: 3001 }, () => {
+	}	
 
-		});
-
-
+	/**
+	 * Start the discovery procedure that use the local cache or download from the InFusion controller
+	 * the last configuration saved on the SD card (usually the developer save a backup copy of the configuration
+	 * on this support but in some cases it can be different from the current running configuration, I need to
+	 * check how to download it with a single pass procedure)
+	 */
+	Discover() {
 		var configuration = net.connect({ host: this.ipaddress, port: 2001 }, () => {
-			// Download interfaces
-			// Download configuration
-			// Check if interface is supported
-			// INVOKE 2774 Object.IsInterfaceSupported 1448819456
+			/**
+			 * List interfaces, list configuration and then check if a specific interface 
+			 * is supported by the recognized devices. 
+			 */
 
 			var buffer = "";
 			configuration.on('data', (data) => {
@@ -109,23 +128,38 @@ class VantageInfusion {
 					var xmlconfiguration = Buffer.from(parsed.IBackup.GetFile.return.File, 'base64').toString("ascii"); // Ta-da
 					fs.writeFileSync("/tmp/vantage.dc", xmlconfiguration);
 					this.emit("endDownloadConfiguration", xmlconfiguration);
+					configuration.destroy();
 				}
-
-
 				buffer = "";
 			});
 
 			/* Aehm, async method becomes sync... */
 			configuration.write("<IIntrospection><GetInterfaces><call></call></GetInterfaces></IIntrospection>\n");
-			configuration.write("<IBackup><GetFile><call>Backup\\Project.dc</call></GetFile></IBackup>\n");
 
+			if (fs.existsSync('/tmp/vantage.dc') && this.usecache) {
+				fs.readFile('/tmp/vantage.dc', 'utf8', function (err, data) {
+					if (!err) {
+						this.emit("endDownloadConfiguration", data);
+					}
+				}.bind(this));
+			} else {
+				configuration.write("<IBackup><GetFile><call>Backup\\Project.dc</call></GetFile></IBackup>\n");
+			}			
 		});
 	}
 
+	/**
+	 * Send the set RGB color request to the controller 
+	 */
     RGBLoad_DissolveHSL(vid, r, g, b, time) {
         var thisTime = time || 500;
         this.command.write(sprintf("INVOKE %s RGBLoad.DissolveHSL %s %s %s %s\n", vid, r, g, b, thisTime))
     }
+
+
+	/**
+	 * Send the set light level to the controller
+	 */
     Load_Dim(vid, level, time) {
 		// TODO: reduce feedback (or command) rate
 		var thisTime = time || 1;
@@ -134,7 +168,6 @@ class VantageInfusion {
 		} else {
 			this.command.write(sprintf("INVOKE %s Load.SetLevel %s\n", vid, level));
 		}
-		// this.command.write(sprintf("LOAD %s %s\n",vid,level))
     }
 }
 
@@ -150,11 +183,24 @@ class VantagePlatform {
 		this.items = [];
 		this.infusion = new VantageInfusion(config.ipaddress, this.items);
 		this.infusion.Discover();
+		this.pendingrequests = 0;
 		this.ready = false;
 		this.callbackPromise = undefined;
 		this.getAccessoryCallback = null;
 
 		this.log("VantagePlatform for InFusion Controller at " + this.ipaddress);
+
+		this.infusion.on('loadStatusChange', (vid,value) => {
+			this.log("loadStatusChange(%s,%s)",vid,value);
+			this.items.forEach(function (accessory) {
+				if (accessory.address == vid) {
+					accessory.bri = parseInt(value);
+					accessory.power = ((value) > 0);
+					// accessory.lightBulbService.getCharacteristic(Characteristic.Brightness).getValue(null, accessory.bri);
+					// accessory.lightBulbService.getCharacteristic(Characteristic.On).getValue(null, accessory.power);
+				}
+			});
+		});
 
 		this.infusion.on('endDownloadConfiguration', (configuration) => {
 			this.log("VantagePlatform for InFusion Controller (end configuration download)");
@@ -167,21 +213,33 @@ class VantagePlatform {
 						var name = thisItem.Name;
 						if (thisItem.DName !== undefined && thisItem.DName != "") name = thisItem.DName;
 						if (thisItem.PowerProfile !== undefined) {
-							this.items.push(new VantageLoad(this.log, this, name, thisItem.VID, "dimmer"));
+							/* Check if it is a Dimmer or a RGB Load */
+							this.pendingrequests = this.pendingrequests + 1;
+							this.log(sprintf("New load asked (VID=%s, Name=%s, ---)", thisItem.VID, name));
+							this.infusion.isInterfaceSupported(thisItem.VID,"RGBLoad", name).then((_response) => {
+								if (_response.support) {
+									this.log(sprintf("New load added (VID=%s, Name=%s, RGB)", _response.name, _response.vid));
+									this.items.push(new VantageLoad(this.log, this, _response.name, _response.vid, "rgb"));
+								} else {
+									this.log(sprintf("New load added (VID=%s, Name=%s, DIMMER)", _response.name, _response.vid));
+									this.items.push(new VantageLoad(this.log, this, _response.name, _response.vid, "dimmer"));
+								}
+								this.infusion.getLoadStatus(_response.vid);
+								this.pendingrequests = this.pendingrequests - 1;
+								if (this.callbackPromise !== undefined && this.ready && this.pendingrequests == 0) this.callbackPromise(this.items);
+							});
 						} else {
+							this.log(sprintf("New load added (VID=%s, Name=%s, RELAY)", thisItem.VID, name));
 							this.items.push(new VantageLoad(this.log, this, name, thisItem.VID, "relay"));
+							this.infusion.getLoadStatus(thisItem.VID);
 						}
-						this.log(sprintf("New load added (VID=%s, Name=%s)", thisItem.VID, name));
-
-						// this.api.registerPlatformAccessories("homebridge-vantage", "VantageControls", [this.items[this.items.length - 1]]);
+						
 					}
 				}
 			}
 			this.log("VantagePlatform for InFusion Controller (end configuration store)");
 			this.ready = true;
-			if (this.callbackPromise != undefined) {
-				this.callbackPromise(this.items);
-			}
+			if (this.callbackPromise !== undefined && this.ready && this.pendingrequests == 0) this.callbackPromise(this.items);
 		});
 	}
 
@@ -199,7 +257,7 @@ class VantagePlatform {
 	/* Get accessory list */
 	accessories(callback) {
 		this.getDevices().then((devices) => {
-			this.log("Yooo");
+			this.log("VantagePlatform for InFusion Controller (accessories readed)");
 			callback(devices);
 		});
 	}
