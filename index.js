@@ -70,10 +70,10 @@ class VantageInfusion {
 	 * previously with the configuration session
 	 * @return true, false or a promise!
 	 */
-	isInterfaceSupported(vid, interfaceName, itemName) {
+	isInterfaceSupported(item, interfaceName) {
 		if (this.interfaces[interfaceName] === undefined) {
 			return new Promise((resolve, reject) => {
-				resolve({'vid':vid, 'name':itemName, 'support':false});
+				resolve({'item': item, 'interface': interfaceName, 'support':false});
 			});
 		} else {
 			/**
@@ -84,14 +84,13 @@ class VantageInfusion {
 			var interfaceId = this.interfaces[interfaceName];
 			
 			return new Promise((resolve, reject) => {
-				this.once(sprintf("isInterfaceSupportedAnswer-%d-%d",parseInt(vid),parseInt(interfaceId)), (_support) => {
-					resolve({'vid':vid, 'name':itemName, 'support':_support});
+				this.once(sprintf("isInterfaceSupportedAnswer-%d-%d",parseInt(item.VID),parseInt(interfaceId)), (_support) => {
+					resolve({'item': item, 'interface': interfaceName, 'support':_support});
 				}
 				);
-				this.command.write(sprintf("INVOKE %s Object.IsInterfaceSupported %s\n", vid,interfaceId));
+				this.command.write(sprintf("INVOKE %s Object.IsInterfaceSupported %s\n", item.VID,interfaceId));
 			});
 		}
-
 	}	
 
 	/**
@@ -185,21 +184,21 @@ class VantagePlatform {
 		this.infusion.Discover();
 		this.pendingrequests = 0;
 		this.ready = false;
-		this.callbackPromise = undefined;
+		this.callbackPromesedAccessories = undefined;
 		this.getAccessoryCallback = null;
 
 		this.log("VantagePlatform for InFusion Controller at " + this.ipaddress);
 
 		this.infusion.on('loadStatusChange', (vid,value) => {
-			this.log("loadStatusChange(%s,%s)",vid,value);
 			this.items.forEach(function (accessory) {
 				if (accessory.address == vid) {
+					this.log(sprintf("loadStatusChange (VID=%s, Name=%s, Bri:%d)", vid,accessory.name, value));
 					accessory.bri = parseInt(value);
 					accessory.power = ((value) > 0);
 					// accessory.lightBulbService.getCharacteristic(Characteristic.Brightness).getValue(null, accessory.bri);
 					// accessory.lightBulbService.getCharacteristic(Characteristic.On).getValue(null, accessory.power);
 				}
-			});
+			}.bind(this));
 		});
 
 		this.infusion.on('endDownloadConfiguration', (configuration) => {
@@ -210,44 +209,62 @@ class VantagePlatform {
 				var thisItem = parsed.Project.Objects.Object[i][thisItemKey];
 				if (thisItem.ExcludeFromWidgets === undefined || thisItem.ExcludeFromWidgets == "False") {
 					if (thisItem.DeviceCategory == "Lighting") {
-						var name = thisItem.Name;
-						if (thisItem.DName !== undefined && thisItem.DName != "") name = thisItem.DName;
-						if (thisItem.PowerProfile !== undefined) {
-							/* Check if it is a Dimmer or a RGB Load */
+						if (thisItem.DName !== undefined && thisItem.DName != "") thisItem.Name = thisItem.DName;
 							this.pendingrequests = this.pendingrequests + 1;
-							this.log(sprintf("New load asked (VID=%s, Name=%s, ---)", thisItem.VID, name));
-							this.infusion.isInterfaceSupported(thisItem.VID,"RGBLoad", name).then((_response) => {
+							this.log(sprintf("New load asked (VID=%s, Name=%s, ---)", thisItem.VID, thisItem.Name));
+							this.infusion.isInterfaceSupported(thisItem,"Load").then((_response) => {
 								if (_response.support) {
-									this.log(sprintf("New load added (VID=%s, Name=%s, RGB)", _response.name, _response.vid));
-									this.items.push(new VantageLoad(this.log, this, _response.name, _response.vid, "rgb"));
+									if (_response.item.PowerProfile !== undefined) {
+										/* Check if it is a Dimmer or a RGB Load */
+										this.infusion.isInterfaceSupported(_response.item,"RGBLoad").then((_response) => {
+											if (_response.support) {
+												this.log(sprintf("New load added (VID=%s, Name=%s, RGB)", _response.item.Name, _response.item.VID));
+												this.items.push(new VantageLoad(this.log, this, _response.item.Name, _response.item.VID, "rgb"));
+											} else {
+												this.log(sprintf("New load added (VID=%s, Name=%s, DIMMER)", _response.item.Name, _response.item.VID));
+												this.items.push(new VantageLoad(this.log, this, _response.item.Name, _response.item.VID, "dimmer"));
+											}
+											this.infusion.getLoadStatus(_response.item.VID);
+											this.pendingrequests = this.pendingrequests - 1;
+											this.callbackPromesedAccessoriesDo();
+										});
+									} else {
+										this.log(sprintf("New load added (VID=%s, Name=%s, RELAY)", _response.item.Name, _response.item.VID));
+										this.items.push(new VantageLoad(this.log, this, _response.item.Name, _response.item.VID, "relay"));
+										this.infusion.getLoadStatus(_response.item.VID);
+										this.pendingrequests = this.pendingrequests - 1;
+										this.callbackPromesedAccessoriesDo();
+									}
 								} else {
-									this.log(sprintf("New load added (VID=%s, Name=%s, DIMMER)", _response.name, _response.vid));
-									this.items.push(new VantageLoad(this.log, this, _response.name, _response.vid, "dimmer"));
+									/**
+									 * This is not a valid load
+									 */
+									this.pendingrequests = this.pendingrequests - 1;
+									this.callbackPromesedAccessoriesDo();
 								}
-								this.infusion.getLoadStatus(_response.vid);
-								this.pendingrequests = this.pendingrequests - 1;
-								if (this.callbackPromise !== undefined && this.ready && this.pendingrequests == 0) this.callbackPromise(this.items);
 							});
-						} else {
-							this.log(sprintf("New load added (VID=%s, Name=%s, RELAY)", thisItem.VID, name));
-							this.items.push(new VantageLoad(this.log, this, name, thisItem.VID, "relay"));
-							this.infusion.getLoadStatus(thisItem.VID);
-						}
-						
 					}
 				}
 			}
 			this.log("VantagePlatform for InFusion Controller (end configuration store)");
 			this.ready = true;
-			if (this.callbackPromise !== undefined && this.ready && this.pendingrequests == 0) this.callbackPromise(this.items);
+			this.callbackPromesedAccessoriesDo();
 		});
+	}
+
+	/**
+	 * Called once, returns the list of accessories only
+	 * when the list is complete
+	 */
+	callbackPromesedAccessoriesDo() {
+		if (this.callbackPromesedAccessories !== undefined && this.ready && this.pendingrequests == 0) this.callbackPromesedAccessories(this.items);
 	}
 
 	getDevices() {
 		return new Promise((resolve, reject) => {
 			if (!this.ready) {
 				this.log("Wait");
-				this.callbackPromise = resolve;
+				this.callbackPromesedAccessories = resolve;
 			} else {
 				resolve(this.items);
 			}
