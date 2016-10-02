@@ -1,15 +1,8 @@
-var colorsys = require('colorsys');
 var net = require('net');
-var sprintf = require("sprintf-js").sprintf;
-var inherits = require("util").inherits;
-var parser = require('xml2json');
+var sprintf = require("sprintf-js").sprintf, inherits = require("util").inherits, Promise = require('promise');
+var parser = require('xml2json'), libxmljs = require("libxmljs"); 
 var extend = require('extend'), events = require('events'), util = require('util'), fs = require('fs');
-var libxmljs = require("libxmljs");
-var Promise = require('promise');
 var Accessory, Characteristic, Service, UUIDGen;
-var myRGB = []; var myTemp = [];
-
-
 
 module.exports = function (homebridge) {
 	Service = homebridge.hap.Service;
@@ -125,7 +118,7 @@ class VantageInfusion {
 				}
 				if (parsed.IBackup !== undefined) {
 					var xmlconfiguration = Buffer.from(parsed.IBackup.GetFile.return.File, 'base64').toString("ascii"); // Ta-da
-					fs.writeFileSync("/tmp/vantage.dc", xmlconfiguration);
+					fs.writeFileSync("/tmp/vantage.dc", xmlconfiguration); /* TODO: create a platform-independent temp file */
 					this.emit("endDownloadConfiguration", xmlconfiguration);
 					configuration.destroy();
 				}
@@ -194,11 +187,13 @@ class VantagePlatform {
 				if (accessory.address == vid) {
 					this.log(sprintf("loadStatusChange (VID=%s, Name=%s, Bri:%d)", vid,accessory.name, value));
 					accessory.bri = parseInt(value);
-					accessory.power = ((value) > 0);
+					accessory.power = ((accessory.bri) > 0);
 					if (accessory.lightBulbService !== undefined) {
 						/* Is it ready? */
-						accessory.lightBulbService.getCharacteristic(Characteristic.Brightness).getValue(null, accessory.bri);
 						accessory.lightBulbService.getCharacteristic(Characteristic.On).getValue(null, accessory.power);
+						if (accessory.type == "rgb" || accessory.type == "dimmer") {
+							accessory.lightBulbService.getCharacteristic(Characteristic.Brightness).getValue(null, accessory.bri);
+						}
 					}
 				}
 			}.bind(this));
@@ -260,13 +255,16 @@ class VantagePlatform {
 	 * when the list is complete
 	 */
 	callbackPromesedAccessoriesDo() {
-		if (this.callbackPromesedAccessories !== undefined && this.ready && this.pendingrequests == 0) this.callbackPromesedAccessories(this.items);
+		if (this.callbackPromesedAccessories !== undefined && this.ready && this.pendingrequests == 0) {
+			this.log("VantagePlatform for InFusion Controller (is open for business)");
+			this.callbackPromesedAccessories(this.items);
+		}
 	}
 
 	getDevices() {
 		return new Promise((resolve, reject) => {
 			if (!this.ready) {
-				this.log("Wait");
+				this.log("VantagePlatform for InFusion Controller (wait for getDevices promise)");
 				this.callbackPromesedAccessories = resolve;
 			} else {
 				resolve(this.items);
@@ -305,57 +303,54 @@ class VantageLoad {
 		this.parent = parent;
 		this.address = vid;
 		this.log = log;
-		this.powerlevel = 0;
 		this.bri = 100;
-		this.power = 0;
+		this.power = false;
 		this.sat = 0;
 		this.hue = 0;
 		this.type = type;
-	}
-
-	isOnline(callback) {
-		callback(null, true);
 	}
 
 	getServices() {
 		var service = new Service.AccessoryInformation();
 		service.setCharacteristic(Characteristic.Name, this.name)
 			.setCharacteristic(Characteristic.Manufacturer, "Vantage Controls")
-			.setCharacteristic(Characteristic.Model, "Power Switch");
+			.setCharacteristic(Characteristic.Model, "Power Switch")
+			.setCharacteristic(Characteristic.SerialNumber, "VID " + this.address);
 
 		this.lightBulbService = new Service.Lightbulb(this.name);
 
 		this.lightBulbService.getCharacteristic(Characteristic.On)
 			.on('set', (level, callback) => {
-				this.log("setPower");
-				this.power = level;
-				if (level > 0 && this.bri == 0) {
+				this.log(sprintf("setPower %s = %s",this.address, level));
+				this.power = (level > 0);
+				if (this.power && this.bri == 0) {
 					this.bri = 100;
 				}
 				this.log(this.bri);
 				this.log(this.power);
 
 				this.parent.infusion.Load_Dim(this.address, this.power * this.bri);
-				callback();
+				callback(null);
 			})
 			.on('get', (callback) => {
-				callback(null, this.power > 0);
+				this.log(sprintf("getPower %s = %s",this.address, this.power));
+				callback(null, this.power);
 			});
 
 		if (this.type == "dimmer" || this.type == "rgb") {
 			this.lightBulbService.getCharacteristic(Characteristic.Brightness)
 				.on('set', (level, callback) => {
+					this.log(sprintf("setBrightness %s = %d",this.address, level));
 					this.log("setBrightness");
-					this.bri = level;
+					this.bri = parseInt(level);
 					this.power = (this.bri > 0);
 					this.log(this.bri);
 					this.log(this.power);
 					this.parent.infusion.Load_Dim(this.address, this.power * this.bri);
-					callback();
+					callback(null);
 				})
 				.on('get', (callback) => {
-					this.log("getBrightness");
-					this.log(this.bri);
+					this.log(sprintf("getBrightness %s = %d",this.address, this.bri));
 					callback(null, this.bri);
 				});
 		}
@@ -367,7 +362,7 @@ class VantageLoad {
 					this.power = true;
 					this.sat = level;
 					this.parent.infusion.RGBLoad_DissolveHSL(this.address, this.hue, this.sat, this.bri)
-					callback();
+					callback(null);
 				})
 				.on('get', (callback) => {
 					callback(null, this.sat);
@@ -378,7 +373,7 @@ class VantageLoad {
 					this.power = true;
 					this.hue = level;
 					this.parent.infusion.RGBLoad_DissolveHSL(this.address, this.hue, this.sat, this.bri)
-					callback();
+					callback(null);
 				})
 				.on('get', (callback) => {
 					callback(null, this.hue);
