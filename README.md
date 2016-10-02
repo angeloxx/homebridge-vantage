@@ -1,5 +1,6 @@
 # VantagePlugin
 VantageControls InFusion plugin for homebridge: https://github.com/nfarina/homebridge
+
 VantageControls (http://www.vantagecontrols.com/) InFusion is an High End solution that can manage:
 - lighting (standard on/off/dimmed lights and RGB solutions using DMX, DALI or wireless bulb like Hue or LiFX)
 - thermoregulation (with own or third party thermostats and HVAC systems)
@@ -46,6 +47,10 @@ Currently it should be possible to control all loads registered on you InFusion 
 - Youus DMX Driver
 
 Stay tuned!
+
+## Configuration
+
+All supported items will automatically added to the HomeBridge device inventory; use the "Exclude from Widgets" and "Display Name" property to remove some devices or change the displayed name. 
 
 # TODOS
 
