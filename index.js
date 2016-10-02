@@ -195,8 +195,11 @@ class VantagePlatform {
 					this.log(sprintf("loadStatusChange (VID=%s, Name=%s, Bri:%d)", vid,accessory.name, value));
 					accessory.bri = parseInt(value);
 					accessory.power = ((value) > 0);
-					// accessory.lightBulbService.getCharacteristic(Characteristic.Brightness).getValue(null, accessory.bri);
-					// accessory.lightBulbService.getCharacteristic(Characteristic.On).getValue(null, accessory.power);
+					if (accessory.lightBulbService !== undefined) {
+						/* Is it ready? */
+						accessory.lightBulbService.getCharacteristic(Characteristic.Brightness).getValue(null, accessory.bri);
+						accessory.lightBulbService.getCharacteristic(Characteristic.On).getValue(null, accessory.power);
+					}
 				}
 			}.bind(this));
 		});
