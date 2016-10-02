@@ -1,5 +1,18 @@
 # VantagePlugin
 VantageControls InFusion plugin for homebridge: https://github.com/nfarina/homebridge
+VantageControls (http://www.vantagecontrols.com/) InFusion is an High End solution that can manage:
+- lighting (standard on/off/dimmed lights and RGB solutions using DMX, DALI or wireless bulb like Hue or LiFX)
+- thermoregulation (with own or third party thermostats and HVAC systems)
+- curtains, doors (third party)
+- A/V systems (own and third party)
+- security systems (third party)
+- Weather stations
+
+With this plugin you will control all systems that is already connected to Vantage without additional 
+support from the manufacturer of the connected device, for example you can control an AC system without the 
+HomeKit support of the specific vendor because you are already control it via InFusion's Driver that count up to 18000 
+supported devices.
+
 
 # Installation
 Install plugin with npm install -g homebridge-vantage
