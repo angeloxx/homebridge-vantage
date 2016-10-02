@@ -180,12 +180,12 @@ class VantagePlatform {
 		this.callbackPromesedAccessories = undefined;
 		this.getAccessoryCallback = null;
 
-		this.log("VantagePlatform for InFusion Controller at " + this.ipaddress);
+		this.log.info("VantagePlatform for InFusion Controller at " + this.ipaddress);
 
 		this.infusion.on('loadStatusChange', (vid,value) => {
 			this.items.forEach(function (accessory) {
 				if (accessory.address == vid) {
-					this.log(sprintf("loadStatusChange (VID=%s, Name=%s, Bri:%d)", vid,accessory.name, value));
+					this.log.debug(sprintf("loadStatusChange (VID=%s, Name=%s, Bri:%d)", vid,accessory.name, value));
 					accessory.bri = parseInt(value);
 					accessory.power = ((accessory.bri) > 0);
 					if (accessory.lightBulbService !== undefined) {
@@ -200,7 +200,7 @@ class VantagePlatform {
 		});
 
 		this.infusion.on('endDownloadConfiguration', (configuration) => {
-			this.log("VantagePlatform for InFusion Controller (end configuration download)");
+			this.log.debug("VantagePlatform for InFusion Controller (end configuration download)");
 			var parsed = JSON.parse(parser.toJson(configuration));
 			for (var i = 0; i < parsed.Project.Objects.Object.length; i++) {
 				var thisItemKey = Object.keys(parsed.Project.Objects.Object[i])[0];
@@ -216,10 +216,10 @@ class VantagePlatform {
 										/* Check if it is a Dimmer or a RGB Load */
 										this.infusion.isInterfaceSupported(_response.item,"RGBLoad").then((_response) => {
 											if (_response.support) {
-												this.log(sprintf("New load added (VID=%s, Name=%s, RGB)", _response.item.Name, _response.item.VID));
+												this.log.debug(sprintf("New load added (VID=%s, Name=%s, RGB)", _response.item.Name, _response.item.VID));
 												this.items.push(new VantageLoad(this.log, this, _response.item.Name, _response.item.VID, "rgb"));
 											} else {
-												this.log(sprintf("New load added (VID=%s, Name=%s, DIMMER)", _response.item.Name, _response.item.VID));
+												this.log.debug(sprintf("New load added (VID=%s, Name=%s, DIMMER)", _response.item.Name, _response.item.VID));
 												this.items.push(new VantageLoad(this.log, this, _response.item.Name, _response.item.VID, "dimmer"));
 											}
 											this.infusion.getLoadStatus(_response.item.VID);
@@ -227,7 +227,7 @@ class VantagePlatform {
 											this.callbackPromesedAccessoriesDo();
 										});
 									} else {
-										this.log(sprintf("New load added (VID=%s, Name=%s, RELAY)", _response.item.Name, _response.item.VID));
+										this.log.debug(sprintf("New load added (VID=%s, Name=%s, RELAY)", _response.item.Name, _response.item.VID));
 										this.items.push(new VantageLoad(this.log, this, _response.item.Name, _response.item.VID, "relay"));
 										this.infusion.getLoadStatus(_response.item.VID);
 										this.pendingrequests = this.pendingrequests - 1;
@@ -244,7 +244,7 @@ class VantagePlatform {
 					}
 				}
 			}
-			this.log("VantagePlatform for InFusion Controller (end configuration store)");
+			this.log.warn("VantagePlatform for InFusion Controller (end configuration store)");
 			this.ready = true;
 			this.callbackPromesedAccessoriesDo();
 		});
@@ -256,7 +256,7 @@ class VantagePlatform {
 	 */
 	callbackPromesedAccessoriesDo() {
 		if (this.callbackPromesedAccessories !== undefined && this.ready && this.pendingrequests == 0) {
-			this.log("VantagePlatform for InFusion Controller (is open for business)");
+			this.log.warn("VantagePlatform for InFusion Controller (is open for business)");
 			this.callbackPromesedAccessories(this.items);
 		}
 	}
@@ -264,7 +264,7 @@ class VantagePlatform {
 	getDevices() {
 		return new Promise((resolve, reject) => {
 			if (!this.ready) {
-				this.log("VantagePlatform for InFusion Controller (wait for getDevices promise)");
+				this.log.debug("VantagePlatform for InFusion Controller (wait for getDevices promise)");
 				this.callbackPromesedAccessories = resolve;
 			} else {
 				resolve(this.items);
@@ -275,7 +275,7 @@ class VantagePlatform {
 	/* Get accessory list */
 	accessories(callback) {
 		this.getDevices().then((devices) => {
-			this.log("VantagePlatform for InFusion Controller (accessories readed)");
+			this.log.debug("VantagePlatform for InFusion Controller (accessories readed)");
 			callback(devices);
 		});
 	}
@@ -321,7 +321,7 @@ class VantageLoad {
 
 		this.lightBulbService.getCharacteristic(Characteristic.On)
 			.on('set', (level, callback) => {
-				this.log(sprintf("setPower %s = %s",this.address, level));
+				this.log.debug(sprintf("setPower %s = %s",this.address, level));
 				this.power = (level > 0);
 				if (this.power && this.bri == 0) {
 					this.bri = 100;
@@ -333,19 +333,16 @@ class VantageLoad {
 				callback(null);
 			})
 			.on('get', (callback) => {
-				this.log(sprintf("getPower %s = %s",this.address, this.power));
+				this.log.debug(sprintf("getPower %s = %s",this.address, this.power));
 				callback(null, this.power);
 			});
 
 		if (this.type == "dimmer" || this.type == "rgb") {
 			this.lightBulbService.getCharacteristic(Characteristic.Brightness)
 				.on('set', (level, callback) => {
-					this.log(sprintf("setBrightness %s = %d",this.address, level));
-					this.log("setBrightness");
+					this.log.debug(sprintf("setBrightness %s = %d",this.address, level));
 					this.bri = parseInt(level);
 					this.power = (this.bri > 0);
-					this.log(this.bri);
-					this.log(this.power);
 					this.parent.infusion.Load_Dim(this.address, this.power * this.bri);
 					callback(null);
 				})
@@ -358,7 +355,6 @@ class VantageLoad {
 		if (this.type == "rgb") {
 			this.lightBulbService.getCharacteristic(Characteristic.Saturation)
 				.on('set', (level, callback) => {
-					this.log("setSat");
 					this.power = true;
 					this.sat = level;
 					this.parent.infusion.RGBLoad_DissolveHSL(this.address, this.hue, this.sat, this.bri)
@@ -369,7 +365,6 @@ class VantageLoad {
 				});
 			this.lightBulbService.getCharacteristic(Characteristic.Hue)
 				.on('set', (level, callback) => {
-					this.log("setHue");
 					this.power = true;
 					this.hue = level;
 					this.parent.infusion.RGBLoad_DissolveHSL(this.address, this.hue, this.sat, this.bri)
