@@ -1,6 +1,6 @@
 var net = require('net');
 var sprintf = require("sprintf-js").sprintf, inherits = require("util").inherits, Promise = require('promise');
-var parser = require('xml2json'), libxmljs = require("libxmljs"); 
+var parser = require('xml2json'), libxmljs = require("libxmljs"), sleep = require('sleep');
 var extend = require('extend'), events = require('events'), util = require('util'), fs = require('fs');
 var Accessory, Characteristic, Service, UUIDGen;
 
@@ -38,18 +38,32 @@ class VantageInfusion {
 				/* Data received */
 				var lines = data.toString().split('\n');
 				for (var i = 0; i < lines.length; i++) {
-					if (lines[i].startsWith("S:LOAD") || lines[i].startsWith("R:GETLOAD")) {
+					var dataItem = lines[i].split(" ");
+					if (lines[i].startsWith("S:LOAD ") || lines[i].startsWith("R:GETLOAD ")) {
 						/* Live update about load level (even if it's a RGB load') */
-						var dataItem = lines[i].split(" ");
 						this.emit("loadStatusChange", parseInt(dataItem[1]),parseInt(dataItem[2]));
 					}
+
+					
+					/* Outdoor temperature */
+					if (lines[i].startsWith("EL: ") && dataItem[3] == "Thermostat.SetOutdoorTemperatureSW")
+						this.emit(sprintf("thermostatOutdoorTemperatureChange"), parseInt(dataItem[2]),parseFloat(dataItem[4]/1000));
+					if (lines[i].startsWith("R:INVOKE") && dataItem[3] == "Thermostat.GetOutdoorTemperature")
+						this.emit(sprintf("thermostatOutdoorTemperatureChange"), parseInt(dataItem[1]),parseFloat(dataItem[2]));
+				
+					if (lines[i].startsWith("EL: ") && dataItem[3] == "Thermostat.SetIndoorTemperatureSW")
+						this.emit(sprintf("thermostatIndoorTemperatureChange"), parseInt(dataItem[2]),parseFloat(dataItem[4]/1000));
+
+
+					/* Non-state feedback */
 					if (lines[i].startsWith("R:INVOKE") && lines[i].indexOf("Object.IsInterfaceSupported")) {
-						var dataItem = lines[i].split(" ");
 						this.emit(sprintf("isInterfaceSupportedAnswer-%d-%d",parseInt(dataItem[1]),parseInt(dataItem[4])),parseInt(dataItem[2]));
 					}
 				}
 			});			
+
 			this.command.write(sprintf("STATUS ALL\n"));
+			this.command.write(sprintf("ELENABLE 1 AUTOMATION ON\nELENABLE 1 EVENT ON\nELENABLE 1 STATUS ON\nELENABLE 1 STATUSEX ON\nELENABLE 1 SYSTEM ON\nELLOG AUTOMATION ON\nELLOG EVENT ON\nELLOG STATUS ON\nELLOG STATUSEX ON\nELLOG SYSTEM ON\n"));
 		});
 	}
 
@@ -81,6 +95,7 @@ class VantageInfusion {
 					resolve({'item': item, 'interface': interfaceName, 'support':_support});
 				}
 				);
+				sleep.usleep(5000);
 				this.command.write(sprintf("INVOKE %s Object.IsInterfaceSupported %s\n", item.VID,interfaceId));
 			});
 		}
@@ -148,6 +163,10 @@ class VantageInfusion {
         this.command.write(sprintf("INVOKE %s RGBLoad.DissolveHSL %s %s %s %s\n", vid, h, s, l * 1000, thisTime))
     }
 
+    Thermostat_GetOutdoorTemperature(vid) {
+        this.command.write(sprintf("INVOKE %s Thermostat.GetOutdoorTemperature\n", vid))
+    }
+
 
 	/**
 	 * Send the set light level to the controller
@@ -173,7 +192,7 @@ class VantagePlatform {
 		this.ipaddress = config.ipaddress;
 		this.lastDiscovery = null;
 		this.items = [];
-		this.infusion = new VantageInfusion(config.ipaddress, this.items);
+		this.infusion = new VantageInfusion(config.ipaddress, this.items, false);
 		this.infusion.Discover();
 		this.pendingrequests = 0;
 		this.ready = false;
@@ -199,6 +218,30 @@ class VantagePlatform {
 			}.bind(this));
 		});
 
+		this.infusion.on('thermostatOutdoorTemperatureChange', (vid,value) => {
+			this.items.forEach(function (accessory) {
+				if (accessory.address == vid) {
+					accessory.temperature = parseFloat(value);
+					if (accessory.thermostatService !== undefined) {
+						/* Is it ready? */
+						accessory.thermostatService.getCharacteristic(Characteristic.CurrentTemperature).getValue(null, accessory.temperature);
+					}
+				}
+			}.bind(this));
+		});		
+
+		this.infusion.on('thermostatIndoorTemperatureChange', (vid,value) => {
+			this.items.forEach(function (accessory) {
+				if (accessory.address == vid) {
+					accessory.temperature = parseFloat(value);
+					if (accessory.thermostatService !== undefined) {
+						/* Is it ready? */
+						accessory.thermostatService.getCharacteristic(Characteristic.CurrentTemperature).getValue(null, accessory.temperature);
+					}
+				}
+			}.bind(this));
+		});	
+
 		this.infusion.on('endDownloadConfiguration', (configuration) => {
 			this.log.debug("VantagePlatform for InFusion Controller (end configuration download)");
 			var parsed = JSON.parse(parser.toJson(configuration));
@@ -206,41 +249,56 @@ class VantagePlatform {
 				var thisItemKey = Object.keys(parsed.Project.Objects.Object[i])[0];
 				var thisItem = parsed.Project.Objects.Object[i][thisItemKey];
 				if (thisItem.ExcludeFromWidgets === undefined || thisItem.ExcludeFromWidgets == "False") {
+					if (thisItem.DeviceCategory == "HVAC") {
+						if (thisItem.DName !== undefined && thisItem.DName != "") thisItem.Name = thisItem.DName;
+						this.pendingrequests = this.pendingrequests + 1;
+						this.log(sprintf("New HVAC asked (VID=%s, Name=%s, ---)", thisItem.VID, thisItem.Name));
+						this.infusion.isInterfaceSupported(thisItem,"Thermostat").then((_response) => {
+							if (_response.support) {
+								this.log.debug(sprintf("New HVAC added (VID=%s, Name=%s, THERMOSTAT)", _response.item.Name, _response.item.VID));
+								this.items.push(new VantageThermostat(this.log, this, _response.item.Name, _response.item.VID, "thermostat"));
+								this.pendingrequests = this.pendingrequests - 1;
+								this.callbackPromesedAccessoriesDo();
+							} else {
+								this.pendingrequests = this.pendingrequests - 1;
+								this.callbackPromesedAccessoriesDo();
+							}
+						});
+
+					}
 					if (thisItem.DeviceCategory == "Lighting") {
 						if (thisItem.DName !== undefined && thisItem.DName != "") thisItem.Name = thisItem.DName;
-							this.pendingrequests = this.pendingrequests + 1;
-							this.log(sprintf("New load asked (VID=%s, Name=%s, ---)", thisItem.VID, thisItem.Name));
-							this.infusion.isInterfaceSupported(thisItem,"Load").then((_response) => {
-								if (_response.support) {
-									if (_response.item.PowerProfile !== undefined) {
-										/* Check if it is a Dimmer or a RGB Load */
-										this.infusion.isInterfaceSupported(_response.item,"RGBLoad").then((_response) => {
-											if (_response.support) {
-												this.log.debug(sprintf("New load added (VID=%s, Name=%s, RGB)", _response.item.Name, _response.item.VID));
-												this.items.push(new VantageLoad(this.log, this, _response.item.Name, _response.item.VID, "rgb"));
-											} else {
-												this.log.debug(sprintf("New load added (VID=%s, Name=%s, DIMMER)", _response.item.Name, _response.item.VID));
-												this.items.push(new VantageLoad(this.log, this, _response.item.Name, _response.item.VID, "dimmer"));
-											}
-											this.infusion.getLoadStatus(_response.item.VID);
-											this.pendingrequests = this.pendingrequests - 1;
-											this.callbackPromesedAccessoriesDo();
-										});
-									} else {
-										this.log.debug(sprintf("New load added (VID=%s, Name=%s, RELAY)", _response.item.Name, _response.item.VID));
-										this.items.push(new VantageLoad(this.log, this, _response.item.Name, _response.item.VID, "relay"));
-										this.infusion.getLoadStatus(_response.item.VID);
+						this.pendingrequests = this.pendingrequests + 1;
+						this.log(sprintf("New load asked (VID=%s, Name=%s, ---)", thisItem.VID, thisItem.Name));
+						this.infusion.isInterfaceSupported(thisItem,"Load").then((_response) => {
+							if (_response.support) {
+								if (_response.item.PowerProfile !== undefined) {
+									/* Check if it is a Dimmer or a RGB Load */
+									this.infusion.isInterfaceSupported(_response.item,"RGBLoad").then((_response) => {
+										if (_response.support) {
+											this.log.debug(sprintf("New load added (VID=%s, Name=%s, RGB)", _response.item.Name, _response.item.VID));
+											this.items.push(new VantageLoad(this.log, this, _response.item.Name, _response.item.VID, "rgb"));
+										} else {
+											this.log.debug(sprintf("New load added (VID=%s, Name=%s, DIMMER)", _response.item.Name, _response.item.VID));
+											this.items.push(new VantageLoad(this.log, this, _response.item.Name, _response.item.VID, "dimmer"));
+										}
 										this.pendingrequests = this.pendingrequests - 1;
 										this.callbackPromesedAccessoriesDo();
-									}
+									});
 								} else {
-									/**
-									 * This is not a valid load
-									 */
+									this.log.debug(sprintf("New load added (VID=%s, Name=%s, RELAY)", _response.item.Name, _response.item.VID));
+									this.items.push(new VantageLoad(this.log, this, _response.item.Name, _response.item.VID, "relay"));
 									this.pendingrequests = this.pendingrequests - 1;
 									this.callbackPromesedAccessoriesDo();
 								}
-							});
+							} else {
+								/**
+								 * This is not a valid load
+								 */
+								this.pendingrequests = this.pendingrequests - 1;
+								this.callbackPromesedAccessoriesDo();
+							}
+						});
 					}
 				}
 			}
@@ -258,6 +316,8 @@ class VantagePlatform {
 		if (this.callbackPromesedAccessories !== undefined && this.ready && this.pendingrequests == 0) {
 			this.log.warn("VantagePlatform for InFusion Controller (is open for business)");
 			this.callbackPromesedAccessories(this.items);
+		} else {
+			this.log.debug(sprintf("VantagePlatform for InFusion Controller (%s,%s)",this.ready,this.pendingrequests));			
 		}
 	}
 
@@ -283,7 +343,9 @@ class VantagePlatform {
 
 class VantageThermostat {
 	constructor(log, parent, name, vid, type) {
+		this.DisplayName = name;
 		this.name = name;
+		this.UUID = UUIDGen.generate(vid);
 		this.parent = parent;
 		this.address = vid;
 		this.log = log;
@@ -291,6 +353,25 @@ class VantageThermostat {
 		this.heating = 0;
 		this.cooling = 0;
 		this.type = type;
+	}
+
+
+	getServices() {
+		var service = new Service.AccessoryInformation();
+		service.setCharacteristic(Characteristic.Name, this.name)
+			.setCharacteristic(Characteristic.Manufacturer, "Vantage Controls")
+			.setCharacteristic(Characteristic.Model, "Thermostat")
+			.setCharacteristic(Characteristic.SerialNumber, "VID " + this.address);
+
+		this.thermostatService = new Service.TemperatureSensor(this.name);
+		this.thermostatService.getCharacteristic(Characteristic.CurrentTemperature)
+			.on('get', (callback) => {
+				this.log(sprintf("getTemperature %s = %.1f",this.address, this.temperature));
+				callback(null, this.temperature);
+			});
+
+		this.parent.infusion.Thermostat_GetOutdoorTemperature(this.address);
+		return [service, this.thermostatService];		
 	}
 
 }
@@ -326,9 +407,6 @@ class VantageLoad {
 				if (this.power && this.bri == 0) {
 					this.bri = 100;
 				}
-				this.log(this.bri);
-				this.log(this.power);
-
 				this.parent.infusion.Load_Dim(this.address, this.power * this.bri);
 				callback(null);
 			})
@@ -374,6 +452,7 @@ class VantageLoad {
 					callback(null, this.hue);
 				});
 		}
+		this.parent.infusion.getLoadStatus(this.address);
 		return [service, this.lightBulbService];
 	}
 }
