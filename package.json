@@ -20,10 +20,12 @@
   "dependencies": {
     "colorsys": "^1.0.9",
     "net": "^1.0.0",
-    "sprint-fs": "^1.0.0",
+    "sprintf-fs": "^1.0.0",
     "xml2json": "^0.10.0",
     "libxmljs": "^0.18.0",
     "wait-until": "^0.0.2",
-    "promise": "^7.0.0"
+    "promise": "^7.0.0",
+    "debug": "^2.4.5",
+    "inherits": "^2.0.0"
   }
 }
